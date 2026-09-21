@@ -157,6 +157,9 @@ def test_stop_one_force_sigkill_fallback(tmp: Path):
             res = cli._stop_one(wl, force=True)       # SIGTERM ignored -> SIGKILL fallback
             assert res == "killed"
             assert time.time() - t0 >= 4.5, "should have waited the full SIGTERM grace"
+            # Reap the child we own; a sandbox may deny querying zombie state.
+            import signal
+            assert proc.wait(timeout=5) == -signal.SIGKILL
             # confirm it's really gone
             end = time.time() + 5
             while time.time() < end and cli._alive(proc.pid):
@@ -294,6 +297,17 @@ def test_alive_zombie_is_dead():
         # wait for the kernel to mark it Z (exited, unreaped)
         pid = proc.pid
         def is_zombie():
+            import sys
+            if sys.platform == "darwin":
+                try:
+                    result = subprocess.run(
+                        ["/bin/ps", "-p", str(pid), "-o", "stat="],
+                        capture_output=True, text=True, check=False,
+                    )
+                except PermissionError:
+                    import pytest
+                    pytest.skip("macOS sandbox denies /bin/ps zombie-state inspection")
+                return result.stdout.strip().startswith("Z")
             try:
                 stat = Path(f"/proc/{pid}/stat").read_text()
                 return stat.rsplit(")", 1)[1].split()[0] == "Z"

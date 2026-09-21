@@ -26,6 +26,8 @@ import fcntl
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -69,6 +71,20 @@ def _alive(pid: Optional[int]) -> bool:
         state = stat.rsplit(")", 1)[1].split()[0]  # field after "(comm)"
         return state != "Z"
     except (OSError, IndexError):
+        # macOS has no /proc; an unreaped exited worker still accepts kill(0).
+        # Query its process state so status/restart/stop do not treat zombies
+        # as live workers. Preserve the conservative fallback on probe errors.
+        if sys.platform == "darwin":
+            try:
+                result = subprocess.run(
+                    ["/bin/ps", "-p", str(pid), "-o", "stat="],
+                    capture_output=True, text=True, timeout=2, check=False,
+                )
+                if result.returncode in (0, 1):
+                    state = result.stdout.strip()
+                    return bool(state) and not state.startswith("Z")
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         return True
 
 

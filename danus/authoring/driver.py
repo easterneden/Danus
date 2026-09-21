@@ -129,7 +129,15 @@ def run_codex(
             "--skip-git-repo-check",
             "-",  # read the prompt from stdin
         )
-    cmd = codex.exec_cmd(codex_bin, model, effort, *tail)
+    # TMPDIR may live inside the repository. Preserve clean author context even
+    # then: no parent agent documents or main-agent authoring MCP tools.
+    isolation = (
+        "-c", "project_doc_max_bytes=0",
+        "-c", "mcp_servers.write-paper.enabled=false",
+        "-c", "mcp_servers.human-summary.enabled=false",
+        "-c", f"mcp_servers.danus.enabled={'true' if networked else 'false'}",
+    )
+    cmd = codex.exec_cmd(codex_bin, model, effort, *isolation, *tail)
     with tempfile.TemporaryDirectory(prefix="danus-authoring-codex-") as empty_cwd:
         return subprocess.run(
             cmd,

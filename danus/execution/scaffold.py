@@ -76,6 +76,12 @@ DANUS_PROJECT_DIR = {project_dir}
 DANUS_AUTHOR = {author}
 DANUS_ROLE = "worker"
 DANUS_VERIFY_URL = {verify_url}
+
+# Workers inherit parent configuration; authoring belongs to the main agent.
+[mcp_servers.write-paper]
+enabled = false
+[mcp_servers.human-summary]
+enabled = false
 """
 
 _TASK_PLACEHOLDER = (

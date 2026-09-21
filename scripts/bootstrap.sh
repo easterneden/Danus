@@ -8,7 +8,7 @@
 # runtime/ (gitignored), so the deployment tree stays clean and the whole
 # toolchain is self-contained (no system-wide installs). Provisions:
 #   1) Node 22            -> runtime/node22            (official tarball)
-#   2) Python venv + deps -> runtime/venv             (mcp/fastapi/uvicorn/pydantic/openai/anthropic
+#   2) Python venv + deps -> runtime/venv             (mcp/fastapi/uvicorn/pydantic/openai
 #                                                      + the danus package itself, editable)
 #   3) codex CLI          -> runtime/codex-npm        (npm @openai/codex)
 #   4) node skill deps    -> human-summary/node_modules (markdown-it/katex, soft)
@@ -20,7 +20,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DANUS_ROOT="$(cd "$HERE/.." && pwd)"
 RT="$DANUS_ROOT/runtime"
 NODE_VERSION="${NODE_VERSION:-v22.14.0}"
-ARCH="$(uname -m)"; case "$ARCH" in x86_64) NARCH=x64;; aarch64|arm64) NARCH=arm64;; *) NARCH=x64;; esac
+ARCH="$(uname -m)"; case "$ARCH" in x86_64) NARCH=x64;; aarch64|arm64) NARCH=arm64;; *) echo "unsupported architecture: $ARCH" >&2; exit 1;; esac
+case "$(uname -s)" in Darwin) NODE_OS=darwin;; Linux) NODE_OS=linux;; *) echo "unsupported operating system" >&2; exit 1;; esac
 mkdir -p "$RT/logs"
 log(){ printf '[bootstrap] %s\n' "$*"; }
 
@@ -33,11 +34,11 @@ if [ -x "$NODE_DIR/bin/node" ]; then
   log "node present: $("$NODE_DIR/bin/node" --version)"
 else
   log "installing Node $NODE_VERSION ($NARCH) -> $NODE_DIR"
-  TARBALL="node-$NODE_VERSION-linux-$NARCH.tar.xz"
+  TARBALL="node-$NODE_VERSION-$NODE_OS-$NARCH.tar.gz"
   $NICE curl -fsSL "https://nodejs.org/dist/$NODE_VERSION/$TARBALL" -o "$RT/$TARBALL" || true
   [ -s "$RT/$TARBALL" ] || { log "FATAL: could not download node (set NODE_VERSION / check network)"; exit 1; }
   mkdir -p "$NODE_DIR"
-  tar -xJf "$RT/$TARBALL" -C "$NODE_DIR" --strip-components=1
+  tar -xzf "$RT/$TARBALL" -C "$NODE_DIR" --strip-components=1
   rm -f "$RT/$TARBALL"
   log "node installed: $("$NODE_DIR/bin/node" --version)"
 fi
@@ -50,19 +51,25 @@ export PATH="$NODE_DIR/bin:$PATH"
 # + imports the deps, and REBUILD it from a fresh base python if not.
 VENV="$RT/venv"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
-DEPS='from danus._mcp import FastMCP; import fastapi,uvicorn,pydantic,openai,anthropic'
+DEPS='from danus._mcp import FastMCP; import fastapi,uvicorn,pydantic,openai'
 if "$VENV/bin/python" -c "$DEPS" 2>/dev/null; then
   log "venv present + healthy"
 else
   [ -e "$VENV" ] && { log "venv missing/broken (dangling base interpreter?) — rebuilding"; rm -rf "$VENV"; }
-  PYBASE="$(command -v python3)"; [ -n "$PYBASE" ] || { log "FATAL: no python3 on PATH to build the venv"; exit 1; }
+  PYBASE="${DANUS_BOOTSTRAP_PYTHON:-}"
+  if [ -z "$PYBASE" ]; then
+    for candidate in "$RT"/python/*/bin/python3; do
+      if [ -x "$candidate" ]; then PYBASE="$candidate"; break; fi
+    done
+  fi
+  PYBASE="${PYBASE:-$(command -v python3)}"; [ -n "$PYBASE" ] || { log "FATAL: no python3 on PATH to build the venv"; exit 1; }
+  "$PYBASE" -c 'import sys; assert sys.version_info >= (3, 10), "Danus requires Python 3.10+"'
   log "creating venv ($PYBASE) -> $VENV"
   "$PYBASE" -m venv "$VENV"
-  log "installing python deps (mcp/fastapi/uvicorn/pydantic/openai/anthropic)"
+  log "installing python deps (mcp/fastapi/uvicorn/pydantic/openai)"
   $NICE "$VENV/bin/pip" install --quiet --no-cache-dir --upgrade pip >/dev/null 2>&1 || true
   $NICE "$VENV/bin/pip" install --quiet --no-cache-dir \
     "mcp>=1.0.0" "fastapi>=0.110.0" "uvicorn>=0.30.0" "pydantic>=2.0" "openai>=2.40" \
-    "anthropic>=0.92" \
     || { log "FATAL: pip install failed"; exit 1; }
   "$VENV/bin/python" -c "$DEPS" || { log "FATAL: venv still missing deps after install"; exit 1; }
 fi
@@ -127,6 +134,8 @@ if [ "${CODEX_BACKEND:-api}" = "api" ] \
    && case "$DANUS_CODEX_API_KEY" in *"<"*|*"your"*) false;; *) true;; esac; then
   bash "$DANUS_ROOT/scripts/setup-codex.sh" api 2>&1 | sed 's/^/[bootstrap] /' \
     || log "WARN: could not write the codex api provider config"
+elif [ "${CODEX_BACKEND:-api}" = "chatgpt" ]; then
+  log "codex backend: existing ChatGPT login (no API provider needed)"
 else
   log "codex api provider NOT written — fill config/codex.env (cp config/codex.env.example)"
   log "  with your BYO endpoint + key, then re-run bootstrap (or: scripts/setup-codex.sh api)"

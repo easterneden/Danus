@@ -21,7 +21,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN="$DANUS_RUNTIME/run"; LOG="$DANUS_RUNTIME/logs"; mkdir -p "$RUN" "$LOG"
 
 _pf(){ echo "$RUN/$1.pid"; }
-_alive(){ local p; p="$(cat "$(_pf "$1")" 2>/dev/null || true)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+_alive(){
+  local p; p="$(cat "$(_pf "$1")" 2>/dev/null || true)"
+  [ -n "$p" ] || return 1
+  "$DANUS_PY" - "$p" <<'PY'
+import os, sys
+try:
+    os.kill(int(sys.argv[1]), 0)
+except ProcessLookupError:
+    sys.exit(1)
+except PermissionError:
+    pass  # The process exists, but the current sandbox cannot signal it.
+PY
+}
 
 # autostart manifest — the `up` invocations to replay after a restart
 # (scripts/recover.sh reads it). One `up`-arg-line per service.
@@ -29,14 +41,27 @@ AUTO="$RUN/autostart"
 _auto_add(){ touch "$AUTO"; grep -qxF "$1" "$AUTO" 2>/dev/null || echo "$1" >> "$AUTO"; }
 _auto_del(){ [ -f "$AUTO" ] || return 0; grep -vxF "$1" "$AUTO" > "$AUTO.tmp" 2>/dev/null || true; mv -f "$AUTO.tmp" "$AUTO" 2>/dev/null || true; }
 
-# _spawn <name> <command…> : detach via setsid; the inner shell records its own
-# pid then exec's the service, so the pidfile holds the real service pid (exec
-# preserves the pid down the start-*.sh → python chain).
+# _spawn <name> <command…>: Python starts a new session on macOS and Linux.
+# The service script execs Python, preserving the PID recorded by the parent.
 _spawn(){
   local name="$1"; shift
   local pf; pf="$(_pf "$name")"
   if _alive "$name"; then echo "[$name] already up (pid $(cat "$pf"))"; return 0; fi
-  setsid bash -c "echo \$\$ > '$pf'; exec $*" >"$LOG/$name.log" 2>&1 </dev/null &
+  # Python provides setsid on both macOS and Linux without an external utility.
+  "$DANUS_PY" - "$pf" "$LOG/$name.log" "$@" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+pidfile, logfile, *command = sys.argv[1:]
+with open(logfile, "w") as log:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+Path(pidfile).write_text(str(process.pid) + "\n")
+PY
   sleep 1
   if _alive "$name"; then echo "[$name] up (pid $(cat "$pf"); log: runtime/logs/$name.log)";
   else echo "[$name] FAILED to start — see runtime/logs/$name.log"; tail -5 "$LOG/$name.log" 2>/dev/null; return 1; fi
@@ -45,8 +70,11 @@ _spawn(){
 _stop(){
   local name="$1" pf p; pf="$(_pf "$name")"
   p="$(cat "$pf" 2>/dev/null || true)"
-  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
-    kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null   # negative pid = whole session/group
+  if _alive "$name"; then
+    kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || {
+      echo "[$name] cannot signal pid $p from this sandbox; keeping the pidfile" >&2
+      return 1
+    }
     sleep 2; kill -0 "$p" 2>/dev/null && { kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; }
     echo "[$name] stopped (was pid $p)"
   else echo "[$name] not running"; fi
@@ -57,9 +85,9 @@ case "${1:-}" in
   up)
     svc="${2:?usage: services.sh up verify|dashboard <project>}"
     case "$svc" in
-      verify)    _spawn verify    "bash '$DANUS_ROOT/scripts/start-verify.sh'" && _auto_add "verify" ;;
+      verify)    _spawn verify bash "$DANUS_ROOT/scripts/start-verify.sh" && _auto_add "verify" ;;
       dashboard) proj="${3:?usage: services.sh up dashboard <project>}"
-                 _spawn "dashboard-$proj" "bash '$DANUS_ROOT/scripts/start-dashboard.sh' '$proj'" && _auto_add "dashboard $proj" ;;
+                 _spawn "dashboard-$proj" bash "$DANUS_ROOT/scripts/start-dashboard.sh" "$proj" && _auto_add "dashboard $proj" ;;
       *) echo "unknown service: $svc"; exit 1 ;;
     esac ;;
   down)
