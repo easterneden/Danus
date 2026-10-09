@@ -11,7 +11,7 @@
 - Location: /Users/oriens/Documents/workspaceX/Danus. Keep project files, dependencies, logs, and run data here.
 - Notifications: current Codex task; notify on meaningful progress, completion, failure, or required user action. Stay quiet on unchanged monitoring checks.
 - Paid API spend ceiling: not applicable; no paid API backend configured.
-- Worker roster: determine when the operator provides the research problem; no research project has been launched.
+- Worker roster: two generation workers, gpt-6-astra/xhigh, for microlocal-six-functors. Verification: gpt-6-astra/xhigh. Do not increase the roster in this run; assess future expansion from evidence.
 
 ## Project state
-Environment installation and checks only. Wait for the operator to describe the research problem before creating or starting research workers. Establish the target and stopping condition at project start, then launch and monitor the run.
+Active project: microlocal-six-functors. Fixed research question and completion criteria: runtime/projects/microlocal-six-functors/PROBLEM.md. Generation and verification use runtime/venv. The Astra verifier listens on 18092; the pre-existing 18091 verifier is preserved but is not used by this project. Monitor in the current Codex task, notifying only on meaningful progress, completion, failure, or required action. No automatic worker-count expansion.
